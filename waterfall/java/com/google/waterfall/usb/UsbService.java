@@ -147,6 +147,10 @@ public final class UsbService extends Service {
             .androidUsbModule(new AndroidUsbModule(this))
             .build();
     component.inject(this);
+
+    IntentFilter i = new IntentFilter();
+    i.addAction(UsbManager.ACTION_USB_ACCESSORY_ATTACHED);
+    registerReceiver(usbAttachedReceiver, i);
   }
 
   @Override
@@ -156,9 +160,21 @@ public final class UsbService extends Service {
     super.onDestroy();
   }
 
+
+  private void handleIntent(Intent intent) {
+    // Handle accessory attached events. Ignore everything else.
+    if (UsbManager.ACTION_USB_ACCESSORY_ATTACHED.equals(intent.getAction())) {
+      Log.d(TAG, "Received ACTION_USB_ACCESSORY_ATTACHED intent.");
+    }
+  }
+
+
   @Override
   public void onStart(Intent intent, int id) {
     Log.i(TAG, "onStart");
+    if (intent != null) {
+      handleIntent(intent);
+    }
 
     registerReceiver(usbAttachedReceiver, new IntentFilter(UsbManager.ACTION_USB_ACCESSORY_ATTACHED));
     usbAttachedReceiverRegistered = true;
