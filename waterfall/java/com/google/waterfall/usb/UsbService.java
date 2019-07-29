@@ -65,6 +65,7 @@ public final class UsbService extends Service {
 
   private boolean usbReceiverRegistered = false;
   private boolean usbDisconnectRegistered = false;
+  private boolean usbAttachedReceiverRegistered = false;
 
   // This can also be a callable which simplifies exception handling
   private static class CopyRunnable implements Runnable {
@@ -99,19 +100,31 @@ public final class UsbService extends Service {
     }
   }
 
+  private BroadcastReceiver usbAttachedReceiver =
+      new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+          String action = intent.getAction();
+          Log.i(TAG, "Accessory attached ...");
+          if (action.equals(UsbManager.ACTION_USB_ACCESSORY_ATTACHED)) {
+            Log.i(TAG, "Accessory attached ...");
+            accessoryAttachedBarrier.countDown();
+          }
+        }
+      };
+
   private BroadcastReceiver usbDisconnectReceiver =
-      usbDisconnectReceiver =
-          new BroadcastReceiver() {
-            @Override
-            public void onReceive(Context context, Intent intent) {
-              String action = intent.getAction();
-              if (action.equals(UsbManager.ACTION_USB_ACCESSORY_DETACHED)) {
-                if (accessory != null) {
-                  tearDown();
-                }
-              }
+      new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+          String action = intent.getAction();
+          if (action.equals(UsbManager.ACTION_USB_ACCESSORY_DETACHED)) {
+            if (accessory != null) {
+              tearDown();
             }
-          };
+          }
+        }
+      };
 
   private final BroadcastReceiver usbReceiver =
       new BroadcastReceiver() {
@@ -145,13 +158,10 @@ public final class UsbService extends Service {
 
   @Override
   public void onStart(Intent intent, int id) {
-    if (UsbManager.ACTION_USB_ACCESSORY_ATTACHED.equals(intent.getAction())) {
-      // Unfortunately we cant process this event. We need extra information
-      Log.i(TAG, "Received ACTION_USB_ACCESSORY_ATTACHED intent.");
-      return;
-    }
     Log.i(TAG, "onStart");
 
+    registerReceiver(usbAttachedReceiver, new IntentFilter(UsbManager.ACTION_USB_ACCESSORY_ATTACHED));
+    usbAttachedReceiverRegistered = true;
     registerReceiver(usbReceiver, new IntentFilter(ACTION_USB_PERMISSION));
     usbReceiverRegistered = true;
 
@@ -218,7 +228,8 @@ public final class UsbService extends Service {
 
                   // We now have permission to open the USB device. Go ahead and connect.
                   accessoryFd = connectToUsbAccessory(getAccessory());
-                  proxy(waterfallPort, bufferSize, accessoryFd);
+                  //proxy(waterfallPort, bufferSize, accessoryFd);
+                  echo(bufferSize, accessoryFd);
                 } catch (InterruptedException e) {
                   throw new RuntimeException(e);
                 }
@@ -271,13 +282,32 @@ public final class UsbService extends Service {
     }
   }
 
+  private void echo(int bufferSize, ParcelFileDescriptor accessoryFd) {
+    try {
+      OutputStream outUsb = new FileOutputStream(accessoryFd.getFileDescriptor());
+      InputStream inUsb = new FileInputStream(accessoryFd.getFileDescriptor());
+
+      // usb -> waterfall: thread
+      Future<?> r = IO_EXECUTOR.submit(new CopyRunnable(inUsb, outUsb, bufferSize));
+
+      r.get();
+      Log.i(TAG, "Done echo ...");
+    } catch (Exception e) {
+      Log.i(TAG, "Done echo with exception...");
+      throw new RuntimeException(e);
+    }
+  }
+
   private void configureUsbAccessory() throws InterruptedException {
     Log.i(TAG, "configureUsbAccessory");
     UsbAccessoryIntf[] accessories = usbManager.getAccessoryList();
 
+    // Service can be started when no device is attached.
+    // Block until an accessory is attached.
     if (accessories == null) {
       Log.i(TAG, "Waiting for accessory to attach");
       accessoryAttachedBarrier.await();
+      Log.i(TAG, "Accessory attached");
     }
 
     if (accessories == null || accessories.length != 1) {
@@ -310,6 +340,12 @@ public final class UsbService extends Service {
       }
       accessoryFd = null;
     }
+
+    if (usbAttachedReceiverRegistered) {
+      usbAttachedReceiverRegistered = false;
+      unregisterReceiver(usbAttachedReceiver);
+    }
+
     if (usbDisconnectRegistered) {
       usbDisconnectRegistered = false;
       unregisterReceiver(usbDisconnectReceiver);
